@@ -103,8 +103,8 @@ td:first-child { font-weight: 700; }
 )
 
 
-# 中文字体与负号显示问题
-plt.rcParams["font.sans-serif"] = ["Arial Unicode MS", "PingFang SC", "Heiti SC", "STHeiti", "SimHei"]
+# 使用通用字体，适配Linux服务器
+plt.rcParams["font.sans-serif"] = ["DejaVu Sans", "Liberation Sans", "SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
 
 #云端训练安装环境
