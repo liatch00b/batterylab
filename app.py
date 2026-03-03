@@ -1,11 +1,16 @@
 import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib import patches
+from matplotlib import font_manager
 import numpy as np
 import os
 import re
 import sys
 import subprocess
+import urllib.request
+import tempfile
+import json
+import shutil
 from pathlib import Path
 
 from utils.data_loader import loadMat, getBatteryCapacity, getBatteryValues
@@ -24,9 +29,12 @@ st.markdown(
     --surface: #ffffff;
     --surface-2: #f7f9fb;
 }
-html, body, [class*="st-"] {
+html, body {
     font-family: "Source Han Serif SC", "Songti SC", "PingFang SC", "Heiti SC", serif;
     color: var(--ink);
+}
+h1, h2, h3, h4, h5, p, li, label, span, div[data-testid="stMarkdownContainer"] {
+    font-family: "Source Han Serif SC", "Songti SC", "PingFang SC", "Heiti SC", serif;
 }
 h1, h2, h3, h4, h5 {
     font-family: "Source Han Sans SC", "PingFang SC", "Heiti SC", sans-serif;
@@ -40,6 +48,11 @@ p, li, .stMarkdown {
 }
 code, pre, .stMarkdown code, .stCode, .stCodeBlock {
     font-family: "Avenir Next Rounded", "SF Pro Rounded", "Nunito", "Quicksand", "Arial Rounded MT Bold", "PingFang SC", sans-serif;
+}
+span.material-symbols-outlined,
+span.material-symbols-rounded,
+i.material-icons {
+    font-family: "Material Symbols Outlined", "Material Symbols Rounded", "Material Icons" !important;
 }
 a {
     color: var(--accent);
@@ -102,10 +115,66 @@ td:first-child { font-weight: 700; }
         unsafe_allow_html=True
 )
 
+def configure_chinese_font_for_matplotlib():
+    preferred_fonts = [
+        "Noto Sans CJK SC",
+        "Noto Sans CJK JP",
+        "WenQuanYi Zen Hei",
+        "Source Han Sans SC",
+        "Source Han Sans CN",
+        "Microsoft YaHei",
+        "SimHei",
+        "PingFang SC",
+        "Heiti SC",
+        "STHeiti",
+        "Arial Unicode MS",
+    ]
+    installed_fonts = {font.name for font in font_manager.fontManager.ttflist}
+    available_fonts = [name for name in preferred_fonts if name in installed_fonts]
 
-# 使用通用字体，适配Linux服务器
-plt.rcParams["font.sans-serif"] = ["DejaVu Sans", "Liberation Sans", "SimHei"]
-plt.rcParams["axes.unicode_minus"] = False
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["axes.unicode_minus"] = False
+
+    if available_fonts:
+        plt.rcParams["font.sans-serif"] = available_fonts + ["DejaVu Sans"]
+        return available_fonts[0], None
+
+    local_font_dir = Path(__file__).resolve().parent / ".fonts"
+    local_font_path = local_font_dir / "NotoSansCJKsc-Regular.otf"
+    font_url = (
+        "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/"
+        "NotoSansCJKsc-Regular.otf"
+    )
+
+    try:
+        local_font_dir.mkdir(parents=True, exist_ok=True)
+        if not local_font_path.exists():
+            urllib.request.urlretrieve(font_url, str(local_font_path))
+
+        font_manager.fontManager.addfont(str(local_font_path))
+        font_manager._load_fontmanager(try_read_cache=False)
+
+        refreshed_fonts = {font.name for font in font_manager.fontManager.ttflist}
+        fallback_name = "Noto Sans CJK SC"
+        if fallback_name in refreshed_fonts:
+            plt.rcParams["font.sans-serif"] = [fallback_name, "DejaVu Sans"]
+            return fallback_name, None
+    except Exception as exc:
+        return None, str(exc)
+
+    plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
+    return None, "字体文件已下载，但 Matplotlib 未识别到字体名称 Noto Sans CJK SC"
+
+
+active_chinese_font, font_setup_error = configure_chinese_font_for_matplotlib()
+if active_chinese_font is None:
+    st.warning(
+        "未检测到可用中文字体，且自动下载字体失败，Matplotlib 图表中的中文可能仍无法显示。"
+        "可在 Debian/Ubuntu 环境执行：`apt-get update && apt-get install -y fonts-noto-cjk`，"
+        "安装后重启应用。"
+    )
+    if font_setup_error:
+        st.caption(f"字体初始化详情：{font_setup_error}")
 
 #云端训练安装环境
 APP_DIR = Path(__file__).resolve().parent
@@ -116,6 +185,9 @@ PRETRAINED_RUL_DIR = APP_DIR / "pretrained" / "rul_prediction"
 HEYWHALE_RUL_URL = "https://www.heywhale.com/mw/project/69981707a1b39231ae4cc95b?shareby=6998159ba81373657c741dad#"
 HEYWHALE_CNN_URL = "https://www.heywhale.com/mw/project/69981707a1b39231ae4cc95b?shareby=6998159ba81373657c741dad#"
 LOCAL_COLAB_DIR = APP_DIR / "colab"
+DATA_REPO_OWNER = os.getenv("DATALAB_REPO_OWNER", "liatch00b")
+DATA_REPO_NAME = os.getenv("DATALAB_REPO_NAME", "batterylab")
+DATA_REPO_BRANCH = os.getenv("DATALAB_REPO_BRANCH", "main")
 
 
 # ---------- 数据加载与处理函数 ----------
@@ -124,6 +196,47 @@ def build_mock_rul_curve(cycles, base, decay, noise):
     trend = base * np.exp(-decay * cycles)
     jitter = np.sin(cycles / 6.0) * noise
     return np.maximum(trend + jitter, 0)
+
+
+def build_mock_battery_data(name, total_cycles=120):
+    seed = sum(ord(ch) for ch in name)
+    rng = np.random.default_rng(seed)
+
+    cycles = np.arange(1, total_cycles + 1)
+    base_capacity = 2.05 + rng.normal(0, 0.02)
+    slope = 0.0038 + rng.normal(0, 0.0002)
+    capacities = base_capacity - slope * cycles + 0.015 * np.sin(cycles / 8.0)
+    capacities = np.clip(capacities, 1.2, None)
+
+    charge_data = []
+    discharge_data = []
+    for idx in range(total_cycles):
+        time_axis = np.linspace(0, 3600, 140)
+
+        charge_current = 1.55 + 0.12 * np.sin(time_axis / 330.0 + idx * 0.1)
+        charge_current += rng.normal(0, 0.01, size=time_axis.shape)
+
+        discharge_voltage = 4.2 - 0.00034 * time_axis - 0.0022 * idx
+        discharge_voltage += 0.03 * np.sin(time_axis / 500.0 + idx * 0.06)
+        discharge_voltage += rng.normal(0, 0.006, size=time_axis.shape)
+        discharge_voltage = np.clip(discharge_voltage, 2.8, 4.25)
+
+        charge_data.append({
+            "Time": time_axis.tolist(),
+            "Current_measured": charge_current.tolist(),
+        })
+        discharge_data.append({
+            "Time": time_axis.tolist(),
+            "Voltage_measured": discharge_voltage.tolist(),
+        })
+
+    return {
+        "raw": [],
+        "capacity": [cycles.tolist(), capacities.tolist()],
+        "charge": charge_data,
+        "discharge": discharge_data,
+        "is_mock": True,
+    }
 
 
 def load_local_notebook(filename):
@@ -254,6 +367,182 @@ def run_external_script(script_path, work_dir, timeout_sec):
         return exc.stdout or "", f"运行超时（{timeout_sec}s）", 124
     except Exception as exc:
         return "", f"运行失败: {exc}", 1
+
+
+def run_git_lfs_pull(repo_dir, timeout_sec=300):
+    try:
+        result = subprocess.run(
+            ["git", "lfs", "pull"],
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+        return result.stdout, result.stderr, result.returncode
+    except FileNotFoundError:
+        return "", "未检测到 git 或 git lfs 命令，请先安装 Git LFS。", 127
+    except subprocess.TimeoutExpired as exc:
+        return exc.stdout or "", f"git lfs pull 运行超时（{timeout_sec}s）", 124
+    except Exception as exc:
+        return "", f"执行失败: {exc}", 1
+
+
+def _is_git_lfs_pointer_file(file_path):
+    try:
+        with open(file_path, "rb") as f:
+            return f.read(128).startswith(b"version https://git-lfs.github.com/spec/v1")
+    except OSError:
+        return False
+
+
+def _read_lfs_pointer_info(file_path):
+    try:
+        text = Path(file_path).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None, None
+
+    oid_match = re.search(r"oid\s+sha256:([0-9a-f]{64})", text)
+    size_match = re.search(r"size\s+(\d+)", text)
+    if not oid_match:
+        return None, None
+    oid = oid_match.group(1)
+    size = int(size_match.group(1)) if size_match else None
+    return oid, size
+
+
+def _download_lfs_object_via_batch(rel_path, target_path, oid, size):
+    batch_url = f"https://github.com/{DATA_REPO_OWNER}/{DATA_REPO_NAME}.git/info/lfs/objects/batch"
+    payload = {
+        "operation": "download",
+        "transfers": ["basic"],
+        "ref": {"name": f"refs/heads/{DATA_REPO_BRANCH}"},
+        "objects": [{"oid": oid, "size": size or 0}],
+    }
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    headers = {
+        "Accept": "application/vnd.git-lfs+json",
+        "Content-Type": "application/vnd.git-lfs+json",
+        "User-Agent": "BatteryLab/1.0",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    req = urllib.request.Request(
+        batch_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as response:
+        result = json.loads(response.read().decode("utf-8", errors="ignore"))
+
+    objects = result.get("objects", [])
+    if not objects:
+        return False, "LFS Batch API 未返回 objects。"
+
+    obj0 = objects[0]
+    if "error" in obj0:
+        return False, f"LFS 对象访问失败：{obj0['error']}"
+
+    action = obj0.get("actions", {}).get("download", {})
+    download_url = action.get("href")
+    if not download_url:
+        return False, "LFS Batch API 未返回下载链接。"
+
+    dl_headers = {"User-Agent": "BatteryLab/1.0"}
+    action_headers = action.get("header", {})
+    if isinstance(action_headers, dict):
+        dl_headers.update(action_headers)
+
+    dl_req = urllib.request.Request(download_url, headers=dl_headers)
+    with urllib.request.urlopen(dl_req, timeout=120) as response:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mat") as tmp_file:
+            tmp_file.write(response.read())
+            tmp_name = tmp_file.name
+
+    tmp_path = Path(tmp_name)
+    if _is_git_lfs_pointer_file(tmp_path):
+        tmp_path.unlink(missing_ok=True)
+        return False, "LFS Batch 下载结果仍是指针文本。"
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(tmp_path), str(target_path))
+    return True, ""
+
+
+def _download_real_mat_from_github(rel_path, target_path):
+    rel_path = rel_path.replace("\\", "/")
+    urls = [
+        (
+            f"https://media.githubusercontent.com/media/"
+            f"{DATA_REPO_OWNER}/{DATA_REPO_NAME}/{DATA_REPO_BRANCH}/{rel_path}"
+        ),
+        (
+            f"https://raw.githubusercontent.com/"
+            f"{DATA_REPO_OWNER}/{DATA_REPO_NAME}/{DATA_REPO_BRANCH}/{rel_path}"
+        ),
+    ]
+
+    errors = []
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    for url in urls:
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "BatteryLab/1.0"})
+            with urllib.request.urlopen(request, timeout=60) as response:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mat") as tmp_file:
+                    tmp_file.write(response.read())
+                    tmp_name = tmp_file.name
+
+            tmp_path = Path(tmp_name)
+            if _is_git_lfs_pointer_file(tmp_path):
+                tmp_path.unlink(missing_ok=True)
+                errors.append(f"下载地址返回了 LFS 指针文本：{url}")
+                continue
+
+            shutil.move(str(tmp_path), str(target_path))
+            return True, ""
+        except Exception as exc:
+            errors.append(f"{url} -> {exc}")
+
+    oid, size = _read_lfs_pointer_info(target_path)
+    if oid:
+        try:
+            ok, detail = _download_lfs_object_via_batch(rel_path, target_path, oid, size)
+            if ok:
+                return True, ""
+            errors.append(f"LFS Batch API 下载失败：{detail}")
+        except Exception as exc:
+            errors.append(f"LFS Batch API 异常：{exc}")
+
+    return False, " | ".join(errors) if errors else "未知下载错误"
+
+
+def ensure_real_mat_file(mat_rel_path):
+    full_path = APP_DIR / mat_rel_path
+    if not full_path.exists():
+        return False, f"数据文件不存在：{mat_rel_path}"
+    if not _is_git_lfs_pointer_file(full_path):
+        return True, ""
+    return _download_real_mat_from_github(mat_rel_path, full_path)
+
+
+def has_git_lfs():
+    try:
+        result = subprocess.run(
+            ["git", "lfs", "version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return True, ""
+        message = (result.stderr or result.stdout or "").strip()
+        return False, message
+    except FileNotFoundError:
+        return False, "未检测到 git 命令。"
+    except Exception as exc:
+        return False, str(exc)
 
 
 def find_latest_eval_dir(base_dir):
@@ -388,6 +677,12 @@ mat_files = {
 @st.cache_resource
 def load_battery_data(name):
     matfile = mat_files[name]
+    ok, detail = ensure_real_mat_file(matfile)
+    if not ok:
+        raise RuntimeError(
+            "检测到 Git LFS 指针文件，且自动下载真实数据失败。"
+            f"详情：{detail}"
+        )
     raw_data = loadMat(matfile)
     capacity = getBatteryCapacity(raw_data)
     charge_data = getBatteryValues(raw_data, Type="charge")
@@ -415,7 +710,26 @@ def render_data_workshop(view_mode=None):
         index=0
     )
 
-    data = load_battery_data(selected_battery)
+    data = None
+    try:
+        data = load_battery_data(selected_battery)
+    except Exception as exc:
+        error_text = str(exc)
+        is_lfs_pointer_error = "Git LFS 指针文件" in error_text
+
+        if is_lfs_pointer_error and not st.session_state.get("_lfs_pull_attempted", False):
+            st.session_state["_lfs_pull_attempted"] = True
+            lfs_ok, _ = has_git_lfs()
+            if lfs_ok:
+                with st.spinner("检测到缺少真实数据，正在自动同步数据..."):
+                    _, _, return_code = run_git_lfs_pull(APP_DIR)
+                if return_code == 0:
+                    load_battery_data.clear()
+                    st.rerun()
+
+        st.error(f"数据加载失败：{error_text}")
+        st.info("请为部署环境安装 git-lfs，并重新部署后重试。")
+        return
 
     if view_mode is None:
         view_mode = st.radio(
@@ -1572,31 +1886,30 @@ model.compile(optimizer=Adam(lr=lr), loss='mse', metrics=['mae'])
         st.markdown(task['description'])
         st.markdown(f"**目标：** {task['objective']}")
 
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        if 'code_diff' in task:
-            with st.expander("🆚 代码差异对比", expanded=True):
-                st.markdown("**原始代码：**")
-                st.code(task['code_diff']['before'], language='python')
-                st.markdown("**修改后代码：**")
-                st.code(task['code_diff']['after'], language='python')
-                st.caption("💡 对比两段代码，理解结构变化。建议分别运行并记录 MAE。")
-        else:
-            code_expanded = False
-            with st.expander("💻 代码示例", expanded=code_expanded):
-                st.code(task['code'], language='python')
-                st.caption("💡 提示：可在 Heywhale 在线 notebook、本地 notebook 或终端运行，按标记修改后执行。")
-    
-    with col2:
-        with st.expander("🔍 修改提示", expanded=True):
-            for hint in task['hints']:
-                st.markdown(hint)
-        
-        if current_task_idx != len(tasks) - 1:
-            with st.expander("✅ 验证步骤", expanded=False):
-                for verify in task['verification']:
-                    st.markdown(verify)
+    if 'code_diff' in task:
+        with st.expander("🆚 代码差异对比", expanded=True):
+            st.markdown("**原始代码：**")
+            st.code(task['code_diff']['before'], language='python')
+            st.markdown("**修改后代码：**")
+            st.code(task['code_diff']['after'], language='python')
+            st.caption("💡 对比两段代码，理解结构变化。建议分别运行并记录 MAE。")
+    else:
+        code_expanded = True
+        with st.expander("💻 代码示例", expanded=code_expanded):
+            code_content = task.get('code', '')
+            if not isinstance(code_content, str):
+                code_content = str(code_content)
+            st.code(code_content.strip(), language='python')
+            st.caption("💡 提示：可在 Heywhale 在线 notebook、本地 notebook 或终端运行，按标记修改后执行。")
+
+    with st.expander("🔍 修改提示", expanded=True):
+        for hint in task['hints']:
+            st.markdown(hint)
+
+    if current_task_idx != len(tasks) - 1:
+        with st.expander("✅ 验证步骤", expanded=False):
+            for verify in task['verification']:
+                st.markdown(verify)
 
         if current_task_idx == 1:
             st.markdown("---")
