@@ -110,6 +110,68 @@ td:first-child { font-weight: 700; }
     border-color: #b7c3cc;
     background: linear-gradient(180deg, #ffffff 0%, #e9eef2 100%);
 }
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {
+    font-size: 16px;
+    font-weight: 700;
+    color: #1f4f5a;
+    letter-spacing: 0.2px;
+    margin-bottom: 4px;
+}
+[data-testid="stSidebar"] [role="radiogroup"] {
+    display: grid;
+    gap: 8px;
+    justify-items: center;
+    width: 100%;
+}
+[data-testid="stSidebar"] [role="radiogroup"] > label {
+    border: 1px solid #d6dee3;
+    border-radius: 12px;
+    background: #ffffff;
+    height: 56px !important;
+    width: 280px !important;
+    max-width: 280px !important;
+    min-width: 280px !important;
+    padding: 8px 12px;
+    margin: 0 auto !important;
+    box-sizing: border-box;
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+}
+[data-testid="stSidebar"] [role="radiogroup"] > label:hover {
+    border-color: #9fb8c2;
+    background: #f2f8fb;
+}
+[data-testid="stSidebar"] [role="radiogroup"] > label > div:first-child {
+    display: none;
+}
+[data-testid="stSidebar"] [role="radiogroup"] > label > div:last-child {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    text-align: center;
+}
+[data-testid="stSidebar"] [role="radiogroup"] > label span,
+[data-testid="stSidebar"] [role="radiogroup"] > label p {
+    display: block;
+    font-size: 14px;
+    font-weight: 600;
+    width: 100%;
+    text-align: center;
+    line-height: 1.25;
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+    margin: 0;
+}
+[data-testid="stSidebar"] [role="radiogroup"] > label:has(input:checked) {
+    border-color: #7fa8b5;
+    background: linear-gradient(180deg, #f2fbff 0%, #eaf4f8 100%);
+    box-shadow: 0 2px 6px rgba(43, 103, 119, 0.12);
+}
 </style>
         """,
         unsafe_allow_html=True
@@ -641,8 +703,7 @@ elif app_mode == "repro":
     st.sidebar.markdown("---")
     safe_sidebar_radio("复现小节", ["RUL_prediction", "CNN-ASTLSTM"], key="repro_section")
 elif app_mode == "sim":
-    st.sidebar.markdown("---")
-    safe_sidebar_radio("仿真小节", ["参数可视化"], key="sim_section")
+    pass
 elif app_mode == "data":
     st.sidebar.markdown("---")
     safe_sidebar_radio(
@@ -881,13 +942,13 @@ def render_home():
 
 def render_learning_module(section=None):
     st.markdown('<div id="learning"></div>', unsafe_allow_html=True)
-    st.subheader("📚 学习模块：基础概念速览")
-    st.markdown("**你将学到：** 深度学习、CNN、LSTM 的核心概念，以及 **RUL** 预测的意义。")
 
     sections = ["深度学习", "CNN", "LSTM", "RUL 意义", "NASA 数据集", "指标", "参数", "小测"]
     current = section if section in sections else sections[0]
 
     if current == "深度学习":
+        st.subheader("📚 学习模块：基础概念速览")
+        st.markdown("**你将学到：** 深度学习、CNN、LSTM 的核心概念，以及 **RUL** 预测的意义。")
         st.markdown("### 深度学习是什么？")
         st.markdown(
             """
@@ -2903,22 +2964,27 @@ def render_simulation_module():
         st.caption("说明：对比曲线是教学用模拟，展示参数变化趋势，不等同于真实训练结果。")
 
 
+def render_footer():
+    st.markdown("<div style='color:#9aa0a6; font-style:italic; font-size:12px; opacity:0.8;'>CHEN Shuangshuang · isabella_chen2113@outlook.com</div>", unsafe_allow_html=True)
+    st.markdown("<div style='color:#9aa0a6; font-style:italic; font-size:12px; opacity:0.8;'>Acknowledgements: CAO Zhiyuan · LU Xunuo</div>", unsafe_allow_html=True)
+
+
 if app_mode == "home":
     render_home()
-    st.markdown("<div style='color:#9aa0a6; font-style:italic; font-size:12px; opacity:0.8;'>CHEN Shuangshuang · isabella_chen2113@outlook.com</div>", unsafe_allow_html=True)
+    render_footer()
 elif app_mode == "learning":
     render_learning_module(st.session_state.get("learning_section"))
     st.markdown("---")
-    st.markdown("<div style='color:#9aa0a6; font-style:italic; font-size:12px; opacity:0.8;'>CHEN Shuangshuang · isabella_chen2113@outlook.com</div>", unsafe_allow_html=True)
+    render_footer()
 elif app_mode == "data":
     render_data_workshop(st.session_state.get("data_view"))
-    st.markdown("<div style='color:#9aa0a6; font-style:italic; font-size:12px; opacity:0.8;'>CHEN Shuangshuang · isabella_chen2113@outlook.com</div>", unsafe_allow_html=True)
+    render_footer()
 elif app_mode == "repro":
     render_reproduction_module(st.session_state.get("repro_section"))
-    st.markdown("<div style='color:#9aa0a6; font-style:italic; font-size:12px; opacity:0.8;'>CHEN Shuangshuang · isabella_chen2113@outlook.com</div>", unsafe_allow_html=True)
+    render_footer()
 elif app_mode == "advanced":
     render_advanced_practice_module(st.session_state.get("advanced_task"))
-    st.markdown("<div style='color:#9aa0a6; font-style:italic; font-size:12px; opacity:0.8;'>CHEN Shuangshuang · isabella_chen2113@outlook.com</div>", unsafe_allow_html=True)
+    render_footer()
 elif app_mode == "sim":
     render_simulation_module()
-    st.markdown("<div style='color:#9aa0a6; font-style:italic; font-size:12px; opacity:0.8;'>CHEN Shuangshuang · isabella_chen2113@outlook.com</div>", unsafe_allow_html=True)
+    render_footer()
